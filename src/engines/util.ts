@@ -24,6 +24,19 @@ export function unwrapRedirect(url: string): string {
       const target = parsed.searchParams.get('q') ?? parsed.searchParams.get('url') ?? parsed.searchParams.get('sa')
       if (target !== null && target.startsWith('http')) return target
     }
+    // Bing wraps organic links in `/ck/a?…&u=a1<base64url>`; the payload is
+    // the target URL after the revision marker.
+    if (parsed.hostname.endsWith('bing.com') && parsed.pathname === '/ck/a') {
+      const payload = parsed.searchParams.get('u')
+      if (payload !== null && payload.startsWith('a1')) {
+        try {
+          const decoded = atob(payload.slice(2).replace(/-/g, '+').replace(/_/g, '/'))
+          if (decoded.startsWith('http')) return decoded
+        } catch {
+          // Malformed payload; keep the wrapper (it still resolves).
+        }
+      }
+    }
     return url
   } catch {
     return url

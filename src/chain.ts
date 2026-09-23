@@ -164,8 +164,10 @@ export async function runSearchChain(
 /**
  * Drive one human-like search on an engine page: open the engine's home,
  * dismiss consent walls, find the search box, type like a person, submit,
- * then settle into a wait-for-results-or-block loop. Bounded by the pool's
- * page timeout around the whole call.
+ * then settle into a wait-for-results-or-block loop. When the homepage never
+ * offers a usable search box (regional variants, failed hydration), fall
+ * back to the engine's results URL once. Bounded by the pool's page timeout
+ * around the whole call.
  */
 async function driveOneSearch(
   page: Page,
@@ -175,6 +177,7 @@ async function driveOneSearch(
   budget: number,
   signal: AbortSignal | undefined,
 ): Promise<readonly WebSearchSource[]> {
+  const startedAt = Date.now()
   signal?.throwIfAborted()
   const navTimeout = Math.max(3_000, Math.min(budget - 1_500, 12_000))
   await page.goto(adapter.homeUrl(locale), { waitUntil: 'domcontentloaded', timeout: navTimeout })
@@ -184,15 +187,55 @@ async function driveOneSearch(
   const initialBlock = await adapter.blockedReason(page)
   if (initialBlock !== undefined) throw new BlockedError(initialBlock)
 
-  const box = page.locator(adapter.searchBoxSelector).first()
-  await box.waitFor({ state: 'visible', timeout: 5_000 })
-  await box.click({ timeout: 2_000 })
-  await humanPause()
-  await humanType(page, query)
-  await page.keyboard.press('Enter')
+  // The human flow: type into the engine's own box. A box that never
+  // appears is not a failure yet — the URL fallback below still gets a
+  // chance.
+  let typed = false
+  try {
+    const box = page.locator(adapter.searchBoxSelector).first()
+    await box.waitFor({ state: 'visible', timeout: 4_000 })
+    await box.click({ timeout: 2_000 })
+    await humanPause()
+    await humanType(page, query)
+    await page.keyboard.press('Enter')
+    typed = true
+  } catch {
+    typed = false
+  }
 
-  const settleDeadline = Date.now() + Math.min(adapter.settleMs + 2_500, budget)
-  while (Date.now() < settleDeadline) {
+  const settleMs = Math.min(adapter.settleMs + 2_500, budget)
+  const sources = await settleForResults(page, adapter, Date.now() + settleMs, signal)
+  if (sources.length > 0 || typed) return sources
+
+  // The homepage offered no usable box; go to the engine's results URL.
+  if (signal !== undefined && signal.aborted) throw new Error('aborted')
+  const remaining = budget - (Date.now() - startedAt)
+  if (remaining < 1_500) return sources
+  await page.goto(adapter.searchUrl(locale, query), {
+    waitUntil: 'domcontentloaded',
+    timeout: Math.max(3_000, Math.min(remaining - 1_000, 12_000)),
+  })
+  const fallbackBlock = await adapter.blockedReason(page)
+  if (fallbackBlock !== undefined) throw new BlockedError(fallbackBlock)
+  return settleForResults(
+    page,
+    adapter,
+    Date.now() + Math.min(adapter.settleMs + 2_000, remaining),
+    signal,
+  )
+}
+
+/**
+ * Poll a submitted results page until organic sources parse, a block
+ * appears, or the deadline passes; an empty return means "nothing parsed".
+ */
+async function settleForResults(
+  page: Page,
+  adapter: EngineAdapter,
+  deadline: number,
+  signal: AbortSignal | undefined,
+): Promise<readonly WebSearchSource[]> {
+  while (Date.now() < deadline) {
     if (signal !== undefined && signal.aborted) throw new Error('aborted')
     const blocked = await adapter.blockedReason(page)
     if (blocked !== undefined) throw new BlockedError(blocked)

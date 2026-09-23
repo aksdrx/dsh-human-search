@@ -82,6 +82,7 @@ export function fakeAdapter(id: EngineId, script: () => EngineScript): EngineAda
     defaultLocale: 'en-US',
     homeUrl: () => 'https://engine.example/',
     loginUrl: () => `https://login.${id}.example/`,
+    searchUrl: (_locale, query) => `https://engine.example/search?q=${encodeURIComponent(query)}`,
     searchBoxSelector: 'input[name="q"]',
     resultSelector: '.result a',
     settleMs: 120,

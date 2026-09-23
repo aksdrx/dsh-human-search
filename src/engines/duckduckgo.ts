@@ -16,7 +16,8 @@ export const duckduckgoAdapter: EngineAdapter = {
   defaultLocale: 'en-US',
   homeUrl: () => 'https://duckduckgo.com/',
   loginUrl: () => 'https://duckduckgo.com/',
-  searchBoxSelector: 'input[name="q"]',
+  searchUrl: (_locale, query) => `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+  searchBoxSelector: 'input#searchbox_input, input[name="q"], input[data-testid="searchbox-input"]',
   resultSelector: 'article[data-testid="result"], #links .result, .result__body',
   settleMs: 4_000,
 

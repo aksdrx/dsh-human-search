@@ -30,6 +30,7 @@ export const googleAdapter: EngineAdapter = {
   defaultLocale: 'en-US',
   homeUrl: () => 'https://www.google.com/',
   loginUrl: () => 'https://accounts.google.com/',
+  searchUrl: (_locale, query) => `https://www.google.com/search?q=${encodeURIComponent(query)}`,
   searchBoxSelector: 'textarea[name="q"], input[name="q"]',
   resultSelector: '#search a h3, #rso a h3',
   settleMs: 6_000,

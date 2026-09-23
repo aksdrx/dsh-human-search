@@ -15,6 +15,7 @@ export const bingAdapter: EngineAdapter = {
   defaultLocale: 'en-US',
   homeUrl: () => 'https://www.bing.com/',
   loginUrl: () => 'https://login.live.com/',
+  searchUrl: (_locale, query) => `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
   searchBoxSelector: 'textarea#sb_form_q, input#sb_form_q, input[name="q"]',
   resultSelector: '#b_results li.b_algo',
   settleMs: 4_000,

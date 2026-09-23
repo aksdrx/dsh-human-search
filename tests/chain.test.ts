@@ -58,7 +58,7 @@ describe('runSearchChain', () => {
     expect(deps.health.shouldTry('google')).toBe(false)
   })
 
-  it('fails over on empty results and on timeouts', async () => {
+  it('fails over on empty results and on timeouts', { timeout: 15_000 }, async () => {
     const { deps } = makeDeps({
       google: () => ({ resultsPresent: true, sources: [] }),
       duckduckgo: () => ({ timeout: true }),

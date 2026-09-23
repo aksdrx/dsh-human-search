@@ -36,6 +36,13 @@ export interface EngineAdapter {
   readonly defaultLocale: string
   /** Where a human would start a search. */
   homeUrl(locale: string): string
+  /**
+   * The engine's results page for a query, verbatim. The human typing flow
+   * is always tried first; this is the graceful fallback when an engine
+   * renders its homepage without a usable search box (regional variants,
+   * failed hydration).
+   */
+  searchUrl(locale: string, query: string): string
   /** Where the headed sign-in window opens (login page, or the engine itself when it has none). */
   loginUrl(locale: string): string
   /** CSS selector for the search box on the home page. */

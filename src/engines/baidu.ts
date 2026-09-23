@@ -16,6 +16,7 @@ export const baiduAdapter: EngineAdapter = {
   defaultLocale: 'zh-CN',
   homeUrl: () => 'https://www.baidu.com/',
   loginUrl: () => 'https://passport.baidu.com/',
+  searchUrl: (_locale, query) => `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`,
   searchBoxSelector: 'input#kw, input[name="wd"]',
   resultSelector: '#content_left .result h3 a, #content_left .c-container h3 a',
   settleMs: 4_000,

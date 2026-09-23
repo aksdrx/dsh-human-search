@@ -16,6 +16,7 @@ export const sogouAdapter: EngineAdapter = {
   defaultLocale: 'zh-CN',
   homeUrl: () => 'https://www.sogou.com/',
   loginUrl: () => 'https://account.sogou.com/',
+  searchUrl: (_locale, query) => `https://www.sogou.com/web?query=${encodeURIComponent(query)}`,
   searchBoxSelector: 'input#query, input[name="query"]',
   resultSelector: '.results .vrwrap h3 a, .results .rb h3 a, .result h3 a',
   settleMs: 4_000,

@@ -13,7 +13,7 @@ describe('normalizeConfig', () => {
     expect(config.headless).toBe(true)
     expect(config.locale).toBe('')
     expect(config.executablePath).toBe('')
-    expect(config.perEngineTimeoutMs).toBe(10_000)
+    expect(config.perEngineTimeoutMs).toBe(15_000)
     expect(config.chainBudgetMs).toBe(50_000)
     expect(config.idleCloseMs).toBe(300_000)
     expect(config.engines.map(entry => entry.id)).toEqual(['google', 'duckduckgo', 'bing', 'baidu', 'sogou'])
@@ -63,7 +63,7 @@ describe('Config schema', () => {
     expect(resolved.headless).toBe(true)
     expect(resolved.loginCommand).toBe('')
     expect(Array.isArray(resolved.engines)).toBe(true)
-    expect(resolved.perEngineTimeoutMs).toBe(10_000)
+    expect(resolved.perEngineTimeoutMs).toBe(15_000)
   })
   it('serializes to a JSON envelope (settings wire requirement)', () => {
     const json = ConfigSchema.toJSON() as { uid: number, refs: Record<string, { type: string }> }

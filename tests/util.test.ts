@@ -13,6 +13,11 @@ describe('unwrapRedirect', () => {
   it('unwraps relative /url wrappers via the url parameter', () => {
     expect(unwrapRedirect('https://www.google.com/url?url=https%3A%2F%2Fexample.com%2Fb')).toBe('https://example.com/b')
   })
+  it('unwraps bing /ck/a base64 payload wrappers', () => {
+    // a1 + base64url("https://example.com/page")
+    const payload = `a1${Buffer.from('https://example.com/page', 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_')}`
+    expect(unwrapRedirect(`https://www.bing.com/ck/a?!&&p=xyz&u=${payload}&ntb=1`)).toBe('https://example.com/page')
+  })
   it('keeps ordinary urls and tolerates garbage', () => {
     expect(unwrapRedirect('https://example.com/x')).toBe('https://example.com/x')
     expect(unwrapRedirect('not a url')).toBe('not a url')

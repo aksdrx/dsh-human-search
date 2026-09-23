@@ -9,7 +9,8 @@
  * @module dsh-human-search/browser
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import type { Logger } from './dsh.ts'
 import type { EngineAdapter, EngineId } from './engines/types.ts'
@@ -32,6 +33,8 @@ export class EngineBusyError extends Error {
 interface LaunchCandidate {
   readonly label: string
   readonly options: { channel?: string, executablePath?: string, userAgent?: string }
+  /** True for the plugin-managed headless shell (user-agent fix applies). */
+  readonly managed?: boolean
 }
 
 /** Where common system browsers live, by platform. */
@@ -57,6 +60,52 @@ const SYSTEM_BROWSER_PATHS: readonly string[] = process.platform === 'darwin'
         '/snap/bin/chromium',
         '/opt/google/chrome/chrome',
       ]
+
+/**
+ * Resolve a plugin-managed browser under the browsers root. Playwright's
+ * registry computes its directory at import time — before any plugin code can
+ * set `PLAYWRIGHT_BROWSERS_PATH` — so managed browsers are located by
+ * scanning the plugin's own directory layout and passed as explicit
+ * `executablePath` values instead.
+ *
+ * `headless` selects the headless shell (the lighter, automation-safe build
+ * whose agent string carries a `Headless` marker this pool rewrites);
+ * otherwise the full Chrome-for-Testing binary is located, which headed
+ * sign-in sessions need.
+ */
+export function resolveManagedExecutable(browsersRoot: string, headless: boolean): string | undefined {
+  const prefix = headless ? 'chromium_headless_shell-' : 'chromium-'
+  const inner = headless
+    ? (process.platform === 'win32'
+        ? ['chrome-headless-shell-win64\\chrome-headless-shell.exe']
+        : process.platform === 'darwin'
+          ? ['chrome-mac/headless_shell']
+          : ['chrome-headless-shell-linux64/chrome-headless-shell', 'chrome-headless-shell-linux/chrome-headless-shell'])
+    : (process.platform === 'win32'
+        ? ['chrome-win64\\chrome.exe', 'chrome-win\\chrome.exe']
+        : process.platform === 'darwin'
+          ? [
+              'chrome-mac64/Chromium.app/Contents/MacOS/Chromium',
+              'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+              'chrome-mac64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+            ]
+          : ['chrome-linux64/chrome', 'chrome-linux/chrome'])
+  let entries: string[] = []
+  try {
+    entries = readdirSync(browsersRoot).filter(entry => entry.startsWith(prefix) && /^\d+$/.test(entry.slice(prefix.length)))
+  } catch {
+    return undefined
+  }
+  // Highest revision first: the newest install wins.
+  entries.sort((a, b) => Number(b.slice(prefix.length)) - Number(a.slice(prefix.length)))
+  for (const entry of entries) {
+    for (const relative of inner) {
+      const candidate = join(browsersRoot, entry, relative)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return undefined
+}
 
 /** Per-engine lifecycle state. */
 interface EngineSlot {
@@ -85,6 +134,13 @@ export class BrowserPool {
   private readonly slots = new Map<EngineId, EngineSlot>()
   /** Availability probe cache (`available()` must stay cheap and offline). */
   private availability: { value: boolean, at: number } | undefined
+  /**
+   * The rewritten headful-equivalent user agent for the managed headless
+   * shell, learned once from the first probe so later engines launch in a
+   * single step; `undefined until probed` is tracked separately from
+   * "probe decided no rewrite is needed".
+   */
+  private managedUaFix: string | null | undefined
   private disposed = false
 
   constructor(
@@ -115,6 +171,9 @@ export class BrowserPool {
     const config = this.store.get()
     if (config.executablePath.length > 0 && existsSync(config.executablePath)) return true
     if (SYSTEM_BROWSER_PATHS.some(path => existsSync(path))) return true
+    if (resolveManagedExecutable(this.layout.browsersRoot, true) !== undefined) return true
+    // Last resort: a playwright-registry Chromium at the default location
+    // (installed by other tooling) still works as a launch candidate.
     try {
       return existsSync(chromium.executablePath())
     } catch {
@@ -122,15 +181,27 @@ export class BrowserPool {
     }
   }
 
-  /** Launch candidates in preference order. */
-  private candidates(config: ReturnType<ConfigStore['get']>): LaunchCandidate[] {
+  /**
+   * Launch candidates in preference order. Headless searches prefer the
+   * system browsers, then the plugin-managed headless shell; a headed
+   * sign-in window needs the full browser binary.
+   */
+  private candidates(config: ReturnType<ConfigStore['get']>, headed: boolean): LaunchCandidate[] {
     const list: LaunchCandidate[] = []
     if (config.executablePath.length > 0) {
       list.push({ label: `configured (${config.executablePath})`, options: { executablePath: config.executablePath } })
     }
     list.push({ label: 'system Google Chrome', options: { channel: 'chrome' } })
     list.push({ label: 'system Microsoft Edge', options: { channel: 'msedge' } })
-    list.push({ label: 'plugin-managed Chromium', options: {} })
+    const managed = resolveManagedExecutable(this.layout.browsersRoot, !headed)
+    if (managed !== undefined) {
+      list.push({
+        label: headed ? 'plugin-managed Chromium' : 'plugin-managed headless shell',
+        options: { executablePath: managed },
+        managed: true,
+      })
+    }
+    list.push({ label: 'default playwright registry Chromium', options: {} })
     return list
   }
 
@@ -176,17 +247,34 @@ export class BrowserPool {
     const userDataDir = engineProfileDir(this.layout, engine)
     const viewport = { width: jitter(1_280, 320), height: jitter(800, 240) }
     let lastError: unknown
-    for (const candidate of this.candidates(config)) {
+    for (const candidate of this.candidates(config, headed)) {
       try {
+        let userAgent = candidate.options.userAgent
+        if (candidate.managed === true && !headed && config.headless && this.managedUaFix !== null) {
+          // A learned rewrite (or the first probe's pending decision below);
+          // apply it directly so the common case is one launch.
+          if (this.managedUaFix !== undefined) userAgent = this.managedUaFix
+        }
         let context = await chromium.launchPersistentContext(userDataDir, {
           ...candidate.options,
+          ...(userAgent !== undefined ? { userAgent } : {}),
           headless: headed ? false : config.headless,
           locale,
           viewport,
         })
-        if (!headed && config.headless && candidate.options.channel === undefined && candidate.options.executablePath === undefined) {
-          const fixed = await this.fixManagedHeadlessUa(context, userDataDir, candidate, locale, viewport)
-          if (fixed !== undefined) context = fixed
+        if (candidate.managed === true && !headed && config.headless && this.managedUaFix === undefined) {
+          const probe = await this.probeManagedHeadlessUa(context)
+          this.managedUaFix = probe
+          if (probe !== null) {
+            await context.close().catch(() => {})
+            context = await chromium.launchPersistentContext(userDataDir, {
+              ...candidate.options,
+              userAgent: probe,
+              headless: true,
+              locale,
+              viewport,
+            })
+          }
         }
         return context
       } catch (error) {
@@ -198,34 +286,21 @@ export class BrowserPool {
   }
 
   /**
-   * Read the launched context's real user agent; when the managed Chromium
-   * headless shell reports a `Headless` marker, relaunch once with the
-   * headful-equivalent agent string (same version and platform tokens).
+   * Read a freshly launched managed headless context's real user agent and,
+   * when it carries a `Headless` marker, return the headful-equivalent agent
+   * string (same version and platform tokens) for every later launch. Runs
+   * once per pool; `null` means no rewrite is needed.
    */
-  private async fixManagedHeadlessUa(
-    context: BrowserContext,
-    userDataDir: string,
-    candidate: LaunchCandidate,
-    locale: string,
-    viewport: { width: number, height: number },
-  ): Promise<BrowserContext | undefined> {
+  private async probeManagedHeadlessUa(context: BrowserContext): Promise<string | null> {
     try {
       const page = await context.newPage()
       const ua: string = await page.evaluate(() => navigator.userAgent)
       await page.close()
-      if (!ua.includes('Headless')) return undefined
-      await context.close()
-      const headfulUa = ua.replace(/HeadlessChrome\//, 'Chrome/')
-      return await chromium.launchPersistentContext(userDataDir, {
-        ...candidate.options,
-        headless: true,
-        locale,
-        viewport,
-        userAgent: headfulUa,
-      })
+      if (!ua.includes('Headless')) return null
+      return ua.replace(/HeadlessChrome\//, 'Chrome/')
     } catch (error) {
-      this.logger.warn('human-search: user-agent probe failed; keeping original context: %s', String(error))
-      return undefined
+      this.logger.warn('human-search: user-agent probe failed; keeping the original context: %s', String(error))
+      return null
     }
   }
 

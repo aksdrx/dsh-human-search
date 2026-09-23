@@ -57,6 +57,12 @@ Settings → Plugins → Plugin configuration → **Human Web Search**:
 
 Everything is stored in your normal DSH settings document (`$DSH_HOME/settings.yaml`, namespace `web-human-search`) and applies live.
 
+Engine notes, learned from live validation:
+
+- Each search types the query into the engine's own box like a person; when an engine renders its homepage without a usable search box (regional variants, failed hydration), the engine's results URL is used once as a graceful fallback.
+- Result links wrapped in engine redirects (Google `/url?q=`, Bing `/ck/a` base64 payloads) are unwrapped to their targets; Baidu and Sogou redirect links are kept as-is (they resolve for the reader).
+- Baidu and Sogou are Chinese engines and can be slow outside China; raise **Per-engine timeout (ms)** if they time out on your network.
+
 ## CAPTCHA and account login
 
 - The interactive window appears **on the machine running DSH**. When DSH runs on your desktop or laptop, that's your screen. On a headless server there is no display — the plugin logs why, keeps failing over, and you can still complete sign-ins by pointing `DSH_HOME`-based state at a machine with a display or running DSH locally once. SSH with X forwarding also works.
