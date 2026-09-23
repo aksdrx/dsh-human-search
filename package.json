@@ -1,0 +1,64 @@
+{
+  "name": "dsh-human-search",
+  "version": "0.1.0",
+  "description": "Human-browser web search provider for DeepSeek Harness: ordered engine fallback chain (Google, DuckDuckGo, Bing, Baidu, Sogou) over Playwright with CAPTCHA/login handoff to the user and persistent per-engine cookies.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "web-search",
+    "playwright",
+    "human-search"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aksdr/dsh-human-search.git"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "install-browser": "node lib/cli.js install-browser"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "playwright": "1.63.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.2 <5.0.0",
+    "@deepseek-ai/dsh-web": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.12",
+    "tsdown": "^0.23.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

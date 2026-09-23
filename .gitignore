@@ -1,0 +1,8 @@
+node_modules/
+.pnpm-store/
+*.log
+.DS_Store
+dist/
+# local validation state (test DSH_HOME and plugin data during development)
+.dsh-home/
+.state-test/

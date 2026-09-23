@@ -1,0 +1,39 @@
+# dsh-human-search bundle patch
+#
+# Installed through the official CLI:
+#
+#   dsh plugin --profile <name> add github:<owner>/dsh-human-search
+#   # or from a local checkout:
+#   dsh plugin --profile <name> add /path/to/dsh-human-search
+#
+# The profile boot merges this patch after every bundle layer shipped with
+# dsh (dsh-base, dsh-web-app, …), and patches replace a targeted row's whole
+# config, so the two entries below win by id.
+#
+# What they do:
+#
+# 1. Insert this package as a plugin row. Its host half registers the
+#    `human-search` provider on the `ctx.web` seam plus the
+#    `web-human-search` settings namespace; its browser half adds the
+#    "Human Web Search" card to Settings → Plugins.
+#
+# 2. Point the web seam's search selection at it, restating the fetch
+#    provider the dsh-base `web` row ships (a patch replaces the whole row
+#    config). The stock web_search tool now routes through the human engine
+#    chain. To revert only this part — keeping the plugin installed — remove
+#    the second entry, or set `web: searchProvider: deepseek-official` in the
+#    profile's cordis.patch.yml, or export DSH_WEB_SEARCH_PROVIDER.
+#
+# This patch deliberately touches nothing else: no stock row is disabled, no
+# prompt or tool is replaced, and uninstalling the package removes both
+# effects completely.
+
+- insert:
+    - id: web-human-search
+      name: 'dsh-human-search'
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: human-search
+    fetchProvider: http
