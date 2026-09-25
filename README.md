@@ -21,7 +21,7 @@ Prerequisites: a working DSH installation (`dsh` on your PATH) and Node ≥ 22.
 
 ```sh
 # from GitHub
-dsh plugin --profile web add github:<owner>/dsh-human-search
+dsh plugin --profile web add github:aksdr/dsh-human-search
 
 # or from a local checkout (development)
 dsh plugin --profile web add /path/to/dsh-human-search
