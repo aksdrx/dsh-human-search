@@ -1,6 +1,6 @@
 {
   "name": "dsh-human-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Human-browser web search provider for DeepSeek Harness: ordered engine fallback chain (Google, DuckDuckGo, Bing, Baidu, Sogou) over Playwright with CAPTCHA/login handoff to the user and persistent per-engine cookies.",
   "keywords": [
     "deepseek-harness",
@@ -14,7 +14,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aksdr/dsh-human-search.git"
+    "url": "git+https://github.com/aksdrx/dsh-human-search.git"
   },
   "main": "lib/index.js",
   "exports": {
@@ -38,7 +38,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/wrap-client.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "install-browser": "node lib/cli.js install-browser"

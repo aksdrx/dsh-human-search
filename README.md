@@ -29,6 +29,12 @@ dsh plugin --profile web add /path/to/dsh-human-search
 
 Restart the profile (`dsh --profile web` or your usual launcher). The `web` row now selects the `human-search` provider.
 
+### Install troubleshooting
+
+- **pnpm blocks the install with an `allowBuilds` hint**: git-hosted plugin installs run package build scripts, which pnpm ≥ 10 blocks until allowed. Copy the exact key the dsh error prints (the full `<package>@<tarball-url>` specifier, not the bare name) under `allowBuilds` in that profile's `pnpm-workspace.yaml`, then re-run the same `add` command. The bare name also works if it's already in the file before the first `add` attempt.
+- **Removing the plugin**: use the short package name, not the git specifier — `dsh plugin --profile web remove dsh-human-search`.
+- **If the web GUI shows "Failed to load plugins" after an update of this plugin**: update to the latest release (`dsh plugin --profile web add github:aksdrx/dsh-human-search`) and restart, or remove the plugin to restore the GUI. (Version 0.1.0 shipped a browser bundle in the wrong module format that broke the shared plugin load; fixed from 0.1.1.)
+
 ### Browser setup
 
 The plugin uses, in order:
@@ -93,6 +99,8 @@ pnpm typecheck
 ```
 
 Layout: `src/` host half (engine adapters, chain, browser pool, login coordinator, provider), `client/` settings card, `cordis.patch.yml` the bundle layer, `lib/` committed build output (git installs don't run build scripts).
+
+The browser half builds in two steps (`pnpm build`): tsdown emits CJS, then `scripts/wrap-client.mjs` wraps it in the `window.__ModuleLoader__.load({ id, factory })` registration the dsh web shell's boot protocol requires — the shell loads plugin browser halves as classic scripts, where ESM syntax would be a SyntaxError. `tests/bundle.test.ts` guards that shape, and a real-browser check is available via `node tests/drive-gui.mjs` against a running test GUI.
 
 Test against a local DSH checkout without touching your real profile:
 
