@@ -4,20 +4,27 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pinned to the exact pnpm that produced the committed lockfile
+      # (also declared in package.json's packageManager field).
       - uses: pnpm/action-setup@v4
         with:
-          version: 12
+          version: 12.3.4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+      # The unit suites run on fakes — no browser is ever launched — so skip
+      # playwright's browser download entirely: faster, no cache churn.
       - run: pnpm install --frozen-lockfile
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: pnpm typecheck
       - run: pnpm test
       # The committed lib/ is what git installs run; fail CI when it drifts

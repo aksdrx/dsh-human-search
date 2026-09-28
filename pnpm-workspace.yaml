@@ -1,3 +1,13 @@
+# Dev-workspace settings for this checkout.
+#
+# autoInstallPeers: false — the @deepseek-ai/* peerDependencies are provided
+# by the DSH host at runtime and are deliberately never imported at build or
+# test time (src/dsh.ts carries narrow structural types instead). Every
+# published @deepseek-ai/dsh-web version is a prerelease, which no semver
+# peer range can resolve; auto-installing them would corrupt the importer
+# section of pnpm-lock.yaml and break `pnpm install --frozen-lockfile` (the
+# first step of CI).
+autoInstallPeers: false
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cosmokit@1.8.5'
   - '@deepseek-ai/schemastery@3.18.4'
