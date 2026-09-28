@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { cleanSnippet, cleanSources, isInternalLink, unwrapRedirect } from '../src/engines/util.ts'
+import { cleanSnippet, cleanSources, isInternalLink, queryTokens, relevantSources, unwrapRedirect } from '../src/engines/util.ts'
 
 describe('unwrapRedirect', () => {
   it('unwraps google /url?q= wrappers', () => {
@@ -73,5 +73,36 @@ describe('cleanSources', () => {
   it('caps at max', () => {
     const raw = Array.from({ length: 10 }, (_, index) => ({ url: `https://x.example/${String(index)}`, title: `T${String(index)}` }))
     expect(cleanSources(raw, 'bing', 3)).toHaveLength(3)
+  })
+})
+
+describe('queryTokens', () => {
+  it('keeps lowercase latin tokens of length 3+', () => {
+    expect(queryTokens('Top 5 BPF development news')).toEqual(['top', 'bpf', 'development', 'news'])
+  })
+  it('strips edge punctuation and drops short or non-latin tokens', () => {
+    expect(queryTokens('rust 1.24: generics!')).toEqual(['rust', 'generics'])
+    expect(queryTokens('人工智能 发展现状')).toEqual([])
+    expect(queryTokens('go')).toEqual([])
+  })
+})
+
+describe('relevantSources', () => {
+  it('accepts when any query token appears in any result', () => {
+    const sources = [
+      { url: 'https://a.example/1', title: 'Celebrity sightings', snippet: 'trending now' },
+      { url: 'https://b.example/2', title: 'Kernel BPF news', snippet: 'a snippet' },
+    ]
+    expect(relevantSources(sources, 'BPF development news')).toBe(true)
+  })
+  it('rejects a decoy SERP sharing no token with the query', () => {
+    const sources = [
+      { url: 'https://gossip.example/1', title: 'Celebrity sightings', snippet: 'trending now' },
+      { url: 'https://gossip.example/2', title: 'Butcher shops near you', snippet: 'travel deals' },
+    ]
+    expect(relevantSources(sources, 'eBPF development news')).toBe(false)
+  })
+  it('passes open-mindedly without usable tokens', () => {
+    expect(relevantSources([{ url: 'https://a.example/1', title: '结果页' }], '人工智能')).toBe(true)
   })
 })

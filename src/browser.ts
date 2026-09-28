@@ -32,9 +32,7 @@ export class EngineBusyError extends Error {
 /** One launch recipe; the first that works wins. */
 interface LaunchCandidate {
   readonly label: string
-  readonly options: { channel?: string, executablePath?: string, userAgent?: string }
-  /** True for the plugin-managed headless shell (user-agent fix applies). */
-  readonly managed?: boolean
+  readonly options: { channel?: string, executablePath?: string }
 }
 
 /** Where common system browsers live, by platform. */
@@ -135,12 +133,13 @@ export class BrowserPool {
   /** Availability probe cache (`available()` must stay cheap and offline). */
   private availability: { value: boolean, at: number } | undefined
   /**
-   * The rewritten headful-equivalent user agent for the managed headless
-   * shell, learned once from the first probe so later engines launch in a
-   * single step; `undefined until probed` is tracked separately from
-   * "probe decided no rewrite is needed".
+   * Learned headless user-agent fixes keyed by launch candidate (`null`:
+   * probed clean). Keyed per executable because the rewrite depends on the
+   * binary — the headless shell's agent carries a `HeadlessChrome` marker,
+   * while a full Chrome in new-headless mode is already clean. Applies to
+   * every candidate, including a user-configured executablePath.
    */
-  private managedUaFix: string | null | undefined
+  private readonly uaFixes = new Map<string, string | null>()
   private disposed = false
 
   constructor(
@@ -172,6 +171,7 @@ export class BrowserPool {
     if (config.executablePath.length > 0 && existsSync(config.executablePath)) return true
     if (SYSTEM_BROWSER_PATHS.some(path => existsSync(path))) return true
     if (resolveManagedExecutable(this.layout.browsersRoot, true) !== undefined) return true
+    if (resolveManagedExecutable(this.layout.browsersRoot, false) !== undefined) return true
     // Last resort: a playwright-registry Chromium at the default location
     // (installed by other tooling) still works as a launch candidate.
     try {
@@ -183,8 +183,11 @@ export class BrowserPool {
 
   /**
    * Launch candidates in preference order. Headless searches prefer the
-   * system browsers, then the plugin-managed headless shell; a headed
-   * sign-in window needs the full browser binary.
+   * system browsers, then the plugin-managed full Chromium (its new-headless
+   * fingerprint is far less bot-flagged than the headless shell's — Google
+   * serves the shell a /sorry wall even signed in), then the lighter
+   * headless shell. A headed sign-in window needs the full browser binary;
+   * the headless shell cannot open one.
    */
   private candidates(config: ReturnType<ConfigStore['get']>, headed: boolean): LaunchCandidate[] {
     const list: LaunchCandidate[] = []
@@ -193,13 +196,19 @@ export class BrowserPool {
     }
     list.push({ label: 'system Google Chrome', options: { channel: 'chrome' } })
     list.push({ label: 'system Microsoft Edge', options: { channel: 'msedge' } })
-    const managed = resolveManagedExecutable(this.layout.browsersRoot, !headed)
-    if (managed !== undefined) {
-      list.push({
-        label: headed ? 'plugin-managed Chromium' : 'plugin-managed headless shell',
-        options: { executablePath: managed },
-        managed: true,
-      })
+    const managedFull = resolveManagedExecutable(this.layout.browsersRoot, false)
+    const managedShell = resolveManagedExecutable(this.layout.browsersRoot, true)
+    if (headed) {
+      if (managedFull !== undefined) {
+        list.push({ label: 'plugin-managed Chromium', options: { executablePath: managedFull } })
+      }
+    } else {
+      if (managedFull !== undefined) {
+        list.push({ label: 'plugin-managed Chromium (new headless)', options: { executablePath: managedFull } })
+      }
+      if (managedShell !== undefined) {
+        list.push({ label: 'plugin-managed headless shell', options: { executablePath: managedShell } })
+      }
     }
     list.push({ label: 'default playwright registry Chromium', options: {} })
     return list
@@ -222,11 +231,17 @@ export class BrowserPool {
     return slot
   }
 
+  /** Identity of a launch candidate for the per-executable UA-fix map. */
+  private candidateKey(candidate: LaunchCandidate): string {
+    return candidate.options.executablePath ?? `channel:${candidate.options.channel ?? 'registry'}`
+  }
+
   /**
-   * Launch (or reuse) the engine's persistent headless context. Managed
-   * Chromium in headless mode reports a `HeadlessChrome` user agent, an
-   * instant bot signal, so one probe relaunches with the headful-equivalent
-   * agent string when needed.
+   * Launch (or reuse) the engine's persistent headless context. Any headless
+   * binary can report a `HeadlessChrome` user agent — the plugin-managed
+   * headless shell, or one configured explicitly — an instant bot signal, so
+   * the first launch of each candidate executable probes its real agent and
+   * relaunches with the headful-equivalent string when needed.
    */
   private launchHeadless(engine: EngineId): Promise<BrowserContext> {
     return this.enqueue(engine, async () => {
@@ -246,30 +261,27 @@ export class BrowserPool {
     const locale = config.locale.length > 0 ? config.locale : (adapter?.defaultLocale ?? 'en-US')
     const userDataDir = engineProfileDir(this.layout, engine)
     const viewport = { width: jitter(1_280, 320), height: jitter(800, 240) }
+    const fixHeadlessUa = !headed && config.headless
     let lastError: unknown
     for (const candidate of this.candidates(config, headed)) {
       try {
-        let userAgent = candidate.options.userAgent
-        if (candidate.managed === true && !headed && config.headless && this.managedUaFix !== null) {
-          // A learned rewrite (or the first probe's pending decision below);
-          // apply it directly so the common case is one launch.
-          if (this.managedUaFix !== undefined) userAgent = this.managedUaFix
-        }
         let context = await chromium.launchPersistentContext(userDataDir, {
           ...candidate.options,
-          ...(userAgent !== undefined ? { userAgent } : {}),
           headless: headed ? false : config.headless,
           locale,
           viewport,
         })
-        if (candidate.managed === true && !headed && config.headless && this.managedUaFix === undefined) {
-          const probe = await this.probeManagedHeadlessUa(context)
-          this.managedUaFix = probe
-          if (probe !== null) {
+        if (fixHeadlessUa) {
+          const key = this.candidateKey(candidate)
+          if (!this.uaFixes.has(key)) {
+            this.uaFixes.set(key, await this.probeHeadlessUa(context))
+          }
+          const fix = this.uaFixes.get(key) ?? undefined
+          if (fix !== undefined) {
             await context.close().catch(() => {})
             context = await chromium.launchPersistentContext(userDataDir, {
               ...candidate.options,
-              userAgent: probe,
+              userAgent: fix,
               headless: true,
               locale,
               viewport,
@@ -286,12 +298,12 @@ export class BrowserPool {
   }
 
   /**
-   * Read a freshly launched managed headless context's real user agent and,
-   * when it carries a `Headless` marker, return the headful-equivalent agent
-   * string (same version and platform tokens) for every later launch. Runs
-   * once per pool; `null` means no rewrite is needed.
+   * Read a freshly launched headless context's real user agent and, when it
+   * carries a `Headless` marker, return the headful-equivalent agent string
+   * (same version and platform tokens) for every later launch of the same
+   * executable. `null` means no rewrite is needed.
    */
-  private async probeManagedHeadlessUa(context: BrowserContext): Promise<string | null> {
+  private async probeHeadlessUa(context: BrowserContext): Promise<string | null> {
     try {
       const page = await context.newPage()
       const ua: string = await page.evaluate(() => navigator.userAgent)
@@ -320,8 +332,12 @@ export class BrowserPool {
     let page: Page | undefined
     try {
       page = await context.newPage()
+      const operationPromise = operation(page)
+      // The losing side of the race must not surface later as an unhandled
+      // rejection when the timeout closes the page under a running call.
+      operationPromise.catch(() => {})
       const result = await Promise.race([
-        operation(page),
+        operationPromise,
         sleep(timeoutMs).then(() => { throw new Error(`engine attempt timed out after ${String(timeoutMs)}ms`) }),
       ])
       return result

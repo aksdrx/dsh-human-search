@@ -33,7 +33,8 @@ function makeProvider(
   return { provider, logins }
 }
 
-const hit = (url: string) => ({ url, title: `Title ${url}`, snippet: 'a snippet' })
+// Titles carry the query word ("test") so the decoy relevance guard accepts them.
+const hit = (url: string) => ({ url, title: `test — Title ${url}`, snippet: 'a snippet' })
 
 describe('HumanSearchProvider', () => {
   it('exposes the stable provider id', () => {

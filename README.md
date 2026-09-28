@@ -8,6 +8,7 @@ No DSH file is modified. Everything the plugin writes lives under `$DSH_HOME/web
 
 - Registers a `human-search` provider on DSH's `ctx.web` seam and selects it as the deployment's search provider — the stock `web_search` tool, cards, and citation flow work unchanged.
 - Each search launches (or reuses) a **persistent, plugin-private Chromium profile per engine**, opens the engine's home page, types the query like a person (per-character jitter, small pauses), and reads the organic results.
+- The typed submit is **verified, not assumed**: the search box's value is read back (a page whose JavaScript has not hydrated yet silently swallows keystrokes), the autosuggest panel is dismissed before Enter (with it open, Enter submits a trending suggestion instead of your query), and the settled page is checked — a SERP for a different query, a "Loading…" bot-check stub, or results sharing no word with the query (a decoy SERP under IP-reputation pressure) is never trusted. Anything unusable retries once through the engine's results URL, then fails over.
 - Engines are tried strictly in your configured order. Any failure — CAPTCHA or bot wall, timeout, parse failure, zero results, an engine busy with your sign-in window — fails over to the next engine. The returned result notes which engine served it and why others were skipped.
 - When an engine blocks with a CAPTCHA:
   1. the search **fails over immediately** (the other engines keep answering), and
@@ -50,7 +51,21 @@ For 3, install once per machine:
 npm run install-browser        # runs `node lib/cli.js install-browser`
 ```
 
+Headless searches prefer the plugin-managed **full Chromium** (new-headless mode — a far less bot-flagged fingerprint than the dedicated headless shell; Google serves the shell a CAPTCHA wall even signed in), with the lighter headless shell as fallback. Whichever binary wins, a `HeadlessChrome` user-agent marker — an instant bot signal, from the shell *or* from a manually configured executable — is probed once and rewritten to the headful-equivalent string automatically.
+
 Without any browser the provider reports unavailable (stock search errors carry this hint); install one or revert the provider selection (below).
+
+### First-run warm-up (recommended)
+
+Fresh machines and datacenter/VPN IPs start with no engine reputation, which means CAPTCHAs or decoy results. Warm the profiles once, as a human, from a desktop session (WSLg/X11 on Windows counts):
+
+```sh
+# inside the installed package directory, or in a checkout:
+npm run warm                       # duckduckgo, google, bing by default
+npm run warm -- bing baidu sogou   # or any subset / order
+```
+
+One headed window per engine opens on the plugin's shared profile: run one search, solve any challenge that appears, optionally sign in (Google/Microsoft/Baidu accounts all raise the trust floor), then close the window to advance. Cookies persist in the profile the headless chain reuses for every future search. Set `DSH_HUMAN_SEARCH_BROWSER=/path/to/chrome` to warm with a specific binary.
 
 ### Settings
 
@@ -65,9 +80,11 @@ Everything is stored in your normal DSH settings document (`$DSH_HOME/settings.y
 
 Engine notes, learned from live validation:
 
-- Each search types the query into the engine's own box like a person; when an engine renders its homepage without a usable search box (regional variants, failed hydration), the engine's results URL is used once as a graceful fallback.
+- Each search types the query into the engine's own box like a person; when the typed submit verifies nothing usable — no usable search box (regional variants), a not-yet-hydrated page that swallowed it, a hijacked autosuggest suggestion — the engine's results URL is used once as a graceful fallback.
 - Result links wrapped in engine redirects (Google `/url?q=`, Bing `/ck/a` base64 payloads) are unwrapped to their targets; Baidu and Sogou redirect links are kept as-is (they resolve for the reader).
+- Extracted results must share at least one word with the query (for Latin-script queries). An engine under IP-reputation pressure sometimes serves a perfectly formed SERP whose results are unrelated decoys; those are treated as "no results" and the chain fails over instead of citing junk.
 - Baidu and Sogou are Chinese engines and can be slow outside China; raise **Per-engine timeout (ms)** if they time out on your network.
+- If an engine keeps failing on your IP, run the [warm-up](#first-run-warm-up-recommended) once — a minute of real usage builds more trust than any amount of headless retrying.
 
 ## CAPTCHA and account login
 

@@ -27,6 +27,18 @@ export interface EngineScript {
   busy?: boolean
   /** Simulate a launch failure distinct from a timeout. */
   launchError?: string
+  /**
+   * Submitting navigates to a results URL for this query instead of the
+   * typed one (an autosuggest panel handing Enter to a trending
+   * suggestion).
+   */
+  hijackQuery?: string
+  /** The typed submit never navigates away (unhydrated homepage JavaScript). */
+  submitDead?: boolean
+  /** Reported page title; 'Loading…' models a bot-check interstitial stub. */
+  title?: string
+  /** Organic sources served only after the driver's results-URL fallback. */
+  fallbackSources?: WebSearchSource[]
 }
 
 /** The store with a fully explicit test configuration. */
@@ -42,8 +54,10 @@ export function testStore(overrides: Partial<Config> = {}): ConfigStore {
     headless: true,
     locale: '',
     executablePath: '',
-    perEngineTimeoutMs: 2_000,
-    chainBudgetMs: 10_000,
+    // Generous engine budget: the human typing flow alone takes ~1–2s, and
+    // the pool-level timeout must not race the settle loop.
+    perEngineTimeoutMs: 5_000,
+    chainBudgetMs: 15_000,
     idleCloseMs: 0,
     loginCommand: '',
     ...overrides,
@@ -58,20 +72,55 @@ export const silentLogger = {
   error: () => {},
 }
 
-/** The minimal fake page the driver touches. */
+/**
+ * The minimal fake page the driver touches: a small URL/typing state
+ * machine. `goto` records navigations (marking the driver's results-URL
+ * fallback), typed characters accumulate into the box's value, and Enter
+ * either navigates to a results URL for the typed query, a hijacked one, or
+ * nothing at all. Organic results appear per the script: `sources` on the
+ * typed-submit SERP, `fallbackSources` only once the fallback URL was used.
+ */
 export function fakePage(script: EngineScript): Page {
-  return {
-    url: () => 'https://engine.example/search?q=test',
-    goto: async () => {},
-    keyboard: { type: async () => {}, press: async () => {} },
-    locator: () => ({
-      first: () => ({ waitFor: async () => {}, click: async () => {} }),
-      waitFor: async () => {},
-      click: async () => {},
-      count: async () => (script.resultsPresent === true ? 3 : 0),
-    }),
+  let url = 'https://engine.example/'
+  let typed = ''
+  let fellBack = false
+  const organic = (): WebSearchSource[] =>
+    fellBack && script.fallbackSources !== undefined ? script.fallbackSources : (script.sources ?? [])
+  const box = {
+    waitFor: async () => {},
+    click: async () => {},
+    inputValue: async () => typed,
+    fill: async (value: string) => { typed = value },
+  }
+  const locator = {
+    first: () => box,
+    waitFor: async () => {},
+    click: async () => {},
+    count: async () => (script.resultsPresent === true || organic().length > 0 ? 3 : 0),
+    inputValue: async () => typed,
+    fill: async (value: string) => { typed = value },
+  }
+  const page = {
+    url: () => url,
+    title: async () => script.title ?? 'Engine results',
+    goto: async (target: string) => {
+      url = target
+      if (target.includes('/search?')) fellBack = true
+    },
+    keyboard: {
+      type: async (char: string) => { typed += char },
+      press: async (key: string) => {
+        if (key !== 'Enter' || script.submitDead === true) return
+        const submitted = script.hijackQuery ?? typed
+        if (submitted.length > 0) url = `https://engine.example/search?q=${encodeURIComponent(submitted)}`
+      },
+    },
+    locator: () => locator,
     evaluate: async () => undefined,
-  } as unknown as Page
+    /** Organic sources for the adapter's extractor, per current page state. */
+    __organic: organic,
+  }
+  return page as unknown as Page
 }
 
 /** A scriptable engine adapter. */
@@ -87,7 +136,10 @@ export function fakeAdapter(id: EngineId, script: () => EngineScript): EngineAda
     resultSelector: '.result a',
     settleMs: 120,
     blockedReason: async () => script().blocked,
-    extractSources: async () => script().sources ?? [],
+    extractSources: async (page: Page) => {
+      const organic = (page as unknown as { __organic?: () => WebSearchSource[] }).__organic
+      return organic !== undefined ? organic() : (script().sources ?? [])
+    },
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-human-search",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Human-browser web search provider for DeepSeek Harness: ordered engine fallback chain (Google, DuckDuckGo, Bing, Baidu, Sogou) over Playwright with CAPTCHA/login handoff to the user and persistent per-engine cookies.",
   "keywords": [
     "deepseek-harness",
@@ -41,7 +41,8 @@
     "build": "tsdown && node scripts/wrap-client.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "install-browser": "node lib/cli.js install-browser"
+    "install-browser": "node lib/cli.js install-browser",
+    "warm": "node lib/cli.js warm"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",

@@ -100,6 +100,37 @@ export function cleanSnippet(text: string | undefined, max = 240): string | unde
 }
 
 /**
+ * Lowercased Latin word tokens (length ≥ 3) of a query, for the decoy
+ * relevance guard. Queries without such tokens — single CJK phrases, short
+ * numerics — yield no tokens and skip the guard rather than risk rejecting
+ * good results whose language doesn't share the query's script.
+ */
+export function queryTokens(query: string): string[] {
+  const tokens: string[] = []
+  for (const raw of query.toLowerCase().split(/\s+/)) {
+    const token = raw.replace(/^\P{L}+|\P{L}+$/gu, '')
+    if (token.length >= 3 && /\p{Script=Latn}/u.test(token)) tokens.push(token)
+  }
+  return tokens
+}
+
+/**
+ * The decoy guard: engines under IP-reputation pressure serve a
+ * correct-looking SERP whose results have nothing to do with the query.
+ * Extracted sources count as relevant when at least one query token appears
+ * in some title, snippet, or URL; with no usable tokens the check passes
+ * open-mindedly.
+ */
+export function relevantSources(sources: readonly WebSearchSource[], query: string): boolean {
+  const tokens = queryTokens(query)
+  if (tokens.length === 0) return true
+  const haystack = sources
+    .map(source => `${source.title ?? ''} ${source.snippet ?? ''} ${source.url}`.toLowerCase())
+    .join(' ')
+  return tokens.some(token => haystack.includes(token))
+}
+
+/**
  * Turn raw in-page extraction into citeable sources: unwrap redirects, drop
  * internal and non-http links, require a title, clean snippets, deduplicate
  * by URL, and cap the count.

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { runSearchChain } from '../src/chain.ts'
+import { runSearchChain, urlCarriesQuery } from '../src/chain.ts'
 import { HealthRegistry } from '../src/health.ts'
 import {
   fakeAdapter, fakeLogins, fakePool, silentLogger, testStore,
@@ -30,7 +30,16 @@ function makeDeps(scripts: Partial<Record<EngineId, () => EngineScript>>, health
   }
 }
 
-const hit = (url: string): { url: string, title: string, snippet: string } => ({ url, title: `Title ${url}`, snippet: 'a snippet' })
+// Titles carry the query word so the decoy relevance guard accepts them
+// (tests search for "query").
+const hit = (url: string): { url: string, title: string, snippet: string } => ({ url, title: `query — Title ${url}`, snippet: 'a snippet' })
+
+// A source with nothing to do with the query, as a decoy SERP serves.
+const gossip = (n: number): { url: string, title: string, snippet: string } => ({
+  url: `https://gossip.example/${String(n)}`,
+  title: `Celebrity sightings ${String(n)}`,
+  snippet: 'trending now',
+})
 
 describe('runSearchChain', () => {
   it('serves from the first healthy engine without side effects', async () => {
@@ -138,5 +147,73 @@ describe('runSearchChain', () => {
     const result = await runSearchChain(deps, ['google'], 'query', 8, controller.signal)
     expect(result.attempts).toHaveLength(0)
     expect(result.servedBy).toBeUndefined()
+  })
+})
+
+describe('runSearchChain submit hardening', () => {
+  // The hardening paths wait out real grace windows (wrong-query SERP,
+  // un-navigated homepage), so the engine budgets are generous here.
+  const generous = { perEngineTimeoutMs: 10_000, chainBudgetMs: 30_000 }
+
+  it('recovers via the results URL when an unhydrated homepage swallows the submit', { timeout: 20_000 }, async () => {
+    const { deps } = makeDeps({
+      google: () => ({ submitDead: true, fallbackSources: [hit('https://fallback.example/1')] }),
+    })
+    const result = await runSearchChain({ ...deps, store: testStore(generous) }, ['google'], 'query', 8, undefined)
+    expect(result.servedBy).toBe('google')
+    expect(result.sources[0]?.url).toBe('https://fallback.example/1')
+    expect(result.attempts[0]?.outcome).toBe('ok')
+  })
+
+  it('rejects an autosuggest-hijacked SERP and re-runs the real query', { timeout: 20_000 }, async () => {
+    const { deps } = makeDeps({
+      google: () => ({
+        hijackQuery: 'trending celebrity news',
+        resultsPresent: true,
+        sources: [gossip(1)],
+        fallbackSources: [hit('https://real.example/1')],
+      }),
+    })
+    const result = await runSearchChain({ ...deps, store: testStore(generous) }, ['google'], 'query', 8, undefined)
+    expect(result.servedBy).toBe('google')
+    expect(result.sources[0]?.url).toBe('https://real.example/1')
+    expect(result.sources[0]?.title).not.toContain('Celebrity')
+  })
+
+  it('treats a decoy SERP on the correct URL as empty and fails over', { timeout: 30_000 }, async () => {
+    const { deps } = makeDeps({
+      bing: () => ({ resultsPresent: true, sources: [gossip(1)], fallbackSources: [gossip(2)] }),
+      baidu: () => ({ resultsPresent: true, sources: [hit('https://baidu.example/1')] }),
+    })
+    const result = await runSearchChain({ ...deps, store: testStore(generous) }, ['bing', 'baidu'], 'query', 8, undefined)
+    expect(result.servedBy).toBe('baidu')
+    expect(result.attempts[0]).toMatchObject({ engine: 'bing', outcome: 'empty' })
+    expect(result.attempts[1]?.outcome).toBe('ok')
+  })
+
+  it('never extracts from a Loading interstitial stub', { timeout: 30_000 }, async () => {
+    const { deps } = makeDeps({
+      google: () => ({ title: 'Loading…', resultsPresent: true, sources: [hit('https://decoy.example/1')] }),
+      duckduckgo: () => ({ resultsPresent: true, sources: [hit('https://ddg.example/1')] }),
+    })
+    const result = await runSearchChain({ ...deps, store: testStore(generous) }, ['google', 'duckduckgo'], 'query', 8, undefined)
+    expect(result.servedBy).toBe('duckduckgo')
+    expect(result.attempts[0]?.outcome).toBe('empty')
+  })
+})
+
+describe('urlCarriesQuery', () => {
+  it('matches any search parameter equal to the query', () => {
+    expect(urlCarriesQuery('https://www.bing.com/search?q=eBPF+news&form=QBLH', 'eBPF news')).toBe(true)
+    expect(urlCarriesQuery('https://www.baidu.com/s?wd=人工智能', '人工智能')).toBe(true)
+    expect(urlCarriesQuery('https://www.sogou.com/web?query=rust', 'rust')).toBe(true)
+  })
+  it('checks hash parameters and decodes escapes', () => {
+    expect(urlCarriesQuery('https://duckduckgo.com/?q=web%20search#q=web%20search', 'web search')).toBe(true)
+  })
+  it('rejects other queries, non-search URLs, and garbage', () => {
+    expect(urlCarriesQuery('https://www.bing.com/search?q=butcher', 'eBPF news')).toBe(false)
+    expect(urlCarriesQuery('https://www.google.com/', 'eBPF news')).toBe(false)
+    expect(urlCarriesQuery('not a url', 'eBPF news')).toBe(false)
   })
 })

@@ -50,7 +50,9 @@ export class LoginCoordinator {
 
   /**
    * Start (or join) the engine's sign-in episode. Fire-and-forget: searches
-   * fail over immediately and never wait on the human.
+   * fail over immediately and never wait on the human. The episode promise
+   * is failure-contained — an unexpected throw is logged, never surfaced as
+   * an unhandled rejection in the host process.
    */
   start(engine: EngineId, trigger: 'auto' | 'manual'): void {
     const running = this.episodes.get(engine)
@@ -58,9 +60,13 @@ export class LoginCoordinator {
       this.logger.info('human-search: sign-in episode for "%s" already running', engine)
       return
     }
-    const episode = this.run(engine, trigger).finally(() => {
-      this.episodes.delete(engine)
-    })
+    const episode = this.run(engine, trigger)
+      .catch((error: unknown) => {
+        this.logger.error('human-search: sign-in episode for "%s" failed: %s', engine, String(error))
+      })
+      .finally(() => {
+        this.episodes.delete(engine)
+      })
     this.episodes.set(engine, episode)
   }
 
