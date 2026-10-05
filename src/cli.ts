@@ -2,15 +2,21 @@
  * `node lib/cli.js <command>` — package-level helpers that run outside the
  * DSH process against the same shared state the plugin uses:
  *
- *   install-browser    download a plugin-managed Chromium into
- *                      `<state root>/browsers/`
- *   warm [engines…]    open headed windows on the per-engine profiles for a
- *                      one-time human warm-up: search once, solve any
- *                      challenge, optionally sign in; close the window to
- *                      advance. Cookies persist in the profile the headless
- *                      chain reuses — the smoothest first-run experience on
- *                      a fresh IP, and the documented remedy for an engine
- *                      that keeps serving CAPTCHAs or decoy results.
+ *   install-browser [kind…]   download plugin-managed browsers into
+ *                             `<state root>/browsers/`; kind is one of
+ *                             chromium (default), firefox, webkit, or
+ *                             chrome (branded Google Chrome, system-wide)
+ *   warm [--family f] [engines…]
+ *                             open headed windows on the per-engine
+ *                             profiles for a one-time human warm-up: search
+ *                             once, solve any challenge, optionally sign
+ *                             in; close the window to advance. `--family`
+ *                             (chromium|firefox|webkit) selects which
+ *                             family's profiles to warm. Cookies persist in
+ *                             the profile the headless chain reuses — the
+ *                             smoothest first-run experience on a fresh IP,
+ *                             and the documented remedy for an engine that
+ *                             keeps serving CAPTCHAs or decoy results.
  * @module dsh-human-search/cli
  */
 
@@ -22,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { BrowserPool } from './browser.ts'
 import { ADAPTERS } from './engines/index.ts'
 import { ENGINE_IDS, isEngineId, type EngineId } from './engines/types.ts'
-import { DEFAULT_CONFIG, ConfigStore, type Config } from './settings.ts'
+import { DEFAULT_CONFIG, ConfigStore, isBrowserFamily, type BrowserFamily, type Config } from './settings.ts'
 import { bindPlaywrightBrowsersPath, ensureStateLayout } from './state.ts'
 
 /** Locate playwright's bundled CLI script without subpath-export guesses. */
@@ -43,25 +49,56 @@ function resolvePlaywrightCli(): string | undefined {
   return undefined
 }
 
+/** Install kinds the CLI accepts, with their human labels. */
+const INSTALL_KINDS = {
+  chromium: 'plugin-managed Chromium',
+  firefox: 'plugin-managed Firefox',
+  webkit: 'plugin-managed WebKit',
+  chrome: 'branded Google Chrome (system-wide)',
+} as const
+
+type InstallKind = keyof typeof INSTALL_KINDS
+
 /** The one-command browser setup. */
-function installBrowser(): number {
+function installBrowser(requested: readonly string[]): number {
+  const kinds: InstallKind[] = []
+  for (const arg of requested) {
+    if (!(arg in INSTALL_KINDS)) {
+      process.stderr.write(`dsh-human-search: unknown install-browser target "${arg}" (known: ${Object.keys(INSTALL_KINDS).join(', ')})\n`)
+      return 1
+    }
+    kinds.push(arg as InstallKind)
+  }
+  if (kinds.length === 0) kinds.push('chromium')
   const layout = ensureStateLayout()
   mkdirSync(layout.browsersRoot, { recursive: true, mode: 0o700 })
   const cli = resolvePlaywrightCli()
   if (cli === undefined) {
-    process.stderr.write('dsh-human-search: cannot locate the playwright CLI inside this install; run `npx playwright@1.63.0 install chromium` with PLAYWRIGHT_BROWSERS_PATH set instead.\n')
+    process.stderr.write('dsh-human-search: cannot locate the playwright CLI inside this install; run `npx playwright@1.63.0 install <kind>` with PLAYWRIGHT_BROWSERS_PATH set instead.\n')
     return 1
   }
-  process.stdout.write(`dsh-human-search: installing plugin-managed Chromium into ${layout.browsersRoot} …\n`)
-  const result = spawnSync(process.execPath, [cli, 'install', 'chromium'], {
-    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: layout.browsersRoot },
-    stdio: 'inherit',
-  })
-  if (result.status !== 0) {
-    process.stderr.write('dsh-human-search: Chromium install failed; see the output above.\n')
-    return result.status ?? 1
+  for (const kind of kinds) {
+    process.stdout.write(`dsh-human-search: installing ${INSTALL_KINDS[kind]} …\n`)
+    const result = spawnSync(process.execPath, [cli, 'install', kind], {
+      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: layout.browsersRoot },
+      stdio: 'inherit',
+    })
+    if (result.status !== 0) {
+      if (kind === 'chrome') {
+        process.stderr.write('dsh-human-search: branded Chrome install failed (it needs root on Linux). Run `sudo npx playwright@1.63.0 install chrome` from your terminal, or install google-chrome-stable from Google\'s apt repository.\n')
+      } else {
+        process.stderr.write(`dsh-human-search: ${kind} install failed; missing system libraries are the usual cause — run \`sudo npx playwright@1.63.0 install-deps ${kind}\` and retry.\n`)
+      }
+      return result.status ?? 1
+    }
+    if (kind === 'chrome') {
+      process.stdout.write('dsh-human-search: Google Chrome installed. Searches and sign-in windows pick it up automatically as the first non-configured candidate.\n')
+    } else if (kind === 'chromium') {
+      process.stdout.write('dsh-human-search: Chromium installed. Searches will use it when no system Chrome/Edge exists.\n')
+    } else {
+      process.stdout.write(`dsh-human-search: ${kind === 'firefox' ? 'Firefox' : 'WebKit'} installed. Assign engines to it via the per-engine browser selector in Settings → Plugins → Human Web Search (or warm its profiles with \`warm --family ${kind}\`).\n`)
+    }
   }
-  process.stdout.write(`dsh-human-search: Chromium installed. Searches will use it when no system Chrome/Edge exists.\n`)
   return 0
 }
 
@@ -80,7 +117,25 @@ const WARM_HINTS: Record<EngineId, string> = {
  * any challenge, and optional sign-ins in the engine's own pages; closing
  * the window advances to the next engine.
  */
-async function warm(requested: string[]): Promise<number> {
+async function warm(args: string[]): Promise<number> {
+  let family: BrowserFamily = 'chromium'
+  const requested: string[] = []
+  for (const arg of args) {
+    if (arg.startsWith('--family=')) {
+      const value = arg.slice('--family='.length)
+      if (!isBrowserFamily(value)) {
+        process.stderr.write(`dsh-human-search: unknown --family "${value}" (known: chromium, firefox, webkit)\n`)
+        return 1
+      }
+      family = value
+      continue
+    }
+    if (arg === '--family') {
+      process.stderr.write('dsh-human-search: use --family=<name> (chromium, firefox, webkit)\n')
+      return 1
+    }
+    requested.push(arg)
+  }
   const unknown = requested.filter(id => !isEngineId(id))
   for (const id of unknown) {
     process.stderr.write(`dsh-human-search: unknown engine "${id}" (known: ${ENGINE_IDS.join(', ')})\n`)
@@ -93,7 +148,12 @@ async function warm(requested: string[]): Promise<number> {
   const layout = ensureStateLayout()
   bindPlaywrightBrowsersPath(layout)
   const executablePath = process.env.DSH_HUMAN_SEARCH_BROWSER ?? ''
-  const config: Config = { ...DEFAULT_CONFIG, headless: false, executablePath }
+  const config: Config = {
+    ...DEFAULT_CONFIG,
+    headless: false,
+    executablePath,
+    engines: DEFAULT_CONFIG.engines.map(entry => ({ ...entry, browser: family })),
+  }
   const store = new ConfigStore(config)
   const logger = {
     info: (...args: unknown[]) => { process.stdout.write(`[warm] ${args.map(String).join(' ')}\n`) },
@@ -106,7 +166,7 @@ async function warm(requested: string[]): Promise<number> {
     for (const engine of engines) {
       const adapter = ADAPTERS.get(engine)
       if (adapter === undefined) continue
-      process.stdout.write(`\n=== ${adapter.label} ===\n${WARM_HINTS[engine]}\nClose the window when done to continue.\n`)
+      process.stdout.write(`\n=== ${adapter.label}${family === 'chromium' ? '' : ` (${family})`} ===\n${WARM_HINTS[engine]}\nClose the window when done to continue.\n`)
       let session: Awaited<ReturnType<BrowserPool['openHeaded']>> | undefined
       try {
         session = await pool.openHeaded(engine)
@@ -132,9 +192,9 @@ async function warm(requested: string[]): Promise<number> {
 /** Dispatch one CLI command. */
 async function main(): Promise<number> {
   const command = process.argv[2]
-  if (command === 'install-browser') return installBrowser()
+  if (command === 'install-browser') return installBrowser(process.argv.slice(3))
   if (command === 'warm') return await warm(process.argv.slice(3))
-  process.stdout.write('usage: node lib/cli.js install-browser\n       node lib/cli.js warm [engines…]\n')
+  process.stdout.write('usage: node lib/cli.js install-browser [chromium|firefox|webkit|chrome …]\n       node lib/cli.js warm [--family=chromium|firefox|webkit] [engines…]\n')
   return command === undefined ? 0 : 1
 }
 

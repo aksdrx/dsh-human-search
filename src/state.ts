@@ -9,7 +9,8 @@
  *   <root>/browsers/            plugin-managed Chromium downloads
  *
  * Root resolution order: `$DSH_HUMAN_SEARCH_HOME`, then `<DSH_HOME or
- * ~/.dsh>/web-human-search`. `PLAYWRIGHT_BROWSERS_PATH` is pointed at the
+ * ~/.dsh>/web-human-search`; both forms return an absolute path (relative
+ * env values anchor to the working directory at first use). `PLAYWRIGHT_BROWSERS_PATH` is pointed at the
  * browsers directory before any playwright registry use so a plugin-managed
  * Chromium never collides with (or silently reuses) other tooling's.
  * @module dsh-human-search/state
@@ -17,15 +18,20 @@
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { EngineId } from './engines/types.ts'
 
-/** Resolve the plugin state root. */
+/**
+ * Resolve the plugin state root to an absolute path. Relative values (the
+ * documented `.state-test` dev form) anchor to the current working directory
+ * at first use, so derived paths handed to child processes — playwright's
+ * install CLI via `PLAYWRIGHT_BROWSERS_PATH` — never drift with their cwd.
+ */
 export function resolveStateRoot(): string {
   const explicit = process.env.DSH_HUMAN_SEARCH_HOME
-  if (explicit !== undefined && explicit.length > 0) return explicit
+  if (explicit !== undefined && explicit.length > 0) return resolve(explicit)
   const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(dshHome, 'web-human-search')
+  return resolve(join(dshHome, 'web-human-search'))
 }
 
 /** The plugin's three storage areas. */
@@ -53,9 +59,14 @@ export function ensureStateLayout(root: string = resolveStateRoot()): StateLayou
   return layout
 }
 
-/** One engine's persistent Chromium user-data-dir. */
-export function engineProfileDir(layout: StateLayout, engine: EngineId): string {
-  return join(layout.profilesRoot, engine)
+/**
+ * One engine's persistent browser profile directory. The Chromium family
+ * keeps the historical `profiles/<engine>` path (warmed cookies stay valid);
+ * every other family gets its own suffix — profile formats differ between
+ * engines and must never share one directory.
+ */
+export function engineProfileDir(layout: StateLayout, engine: EngineId, family: 'chromium' | 'firefox' | 'webkit' = 'chromium'): string {
+  return join(layout.profilesRoot, family === 'chromium' ? engine : `${engine}-${family}`)
 }
 
 /** One engine's exported storageState path. */

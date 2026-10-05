@@ -91,6 +91,6 @@ function renderAllFailed(attempts: readonly Attempt[], browserAvailable: boolean
   })
   const hint = browserAvailable
     ? 'Hint: engines commonly block datacenter IPs; try again, complete a sign-in from the plugin settings card, or reorder engines.'
-    : 'Hint: no usable browser was found. Install one with `npm run install-browser` in the dsh-human-search package (plugin-managed Chromium), or set executablePath in Settings → Plugins → Human Web Search.'
+    : 'Hint: a browser for one of your enabled engines is missing. Run `npm run install-browser` in the dsh-human-search package (or npx playwright install firefox / webkit for non-Chromium engines), or set executablePath in Settings → Plugins → Human Web Search.'
   return `human-search: every engine failed.\n${lines.join('\n')}\n${hint}`
 }

@@ -93,18 +93,18 @@ describe('HumanSearchProvider', () => {
       logger: silentLogger,
     })
     await expect(provider.search({ query: 'test' })).rejects.toSatisfy((error: unknown) =>
-      (error as HumanSearchError).message.includes('no usable browser was found'))
+      (error as HumanSearchError).message.includes('a browser for one of your enabled engines is missing'))
   })
 
   it('refuses to search with every engine disabled', async () => {
     const { provider } = makeProvider(
       { google: () => ({ resultsPresent: true, sources: [hit('https://a.example/1')] }) },
       { engines: [
-        { id: 'google', enabled: false },
-        { id: 'duckduckgo', enabled: false },
-        { id: 'bing', enabled: false },
-        { id: 'baidu', enabled: false },
-        { id: 'sogou', enabled: false },
+        { id: 'google', enabled: false, browser: 'chromium' },
+        { id: 'duckduckgo', enabled: false, browser: 'chromium' },
+        { id: 'bing', enabled: false, browser: 'chromium' },
+        { id: 'baidu', enabled: false, browser: 'chromium' },
+        { id: 'sogou', enabled: false, browser: 'chromium' },
       ] },
     )
     await expect(provider.search({ query: 'test' })).rejects.toSatisfy((error: unknown) =>

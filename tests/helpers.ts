@@ -45,11 +45,11 @@ export interface EngineScript {
 export function testStore(overrides: Partial<Config> = {}): ConfigStore {
   const config: Config = {
     engines: [
-      { id: 'google', enabled: true },
-      { id: 'duckduckgo', enabled: true },
-      { id: 'bing', enabled: true },
-      { id: 'baidu', enabled: true },
-      { id: 'sogou', enabled: true },
+      { id: 'google', enabled: true, browser: 'chromium' },
+      { id: 'duckduckgo', enabled: true, browser: 'chromium' },
+      { id: 'bing', enabled: true, browser: 'chromium' },
+      { id: 'baidu', enabled: true, browser: 'chromium' },
+      { id: 'sogou', enabled: true, browser: 'chromium' },
     ],
     headless: true,
     locale: '',

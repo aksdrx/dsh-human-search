@@ -12,10 +12,24 @@ import { ENGINE_ORDER_DEFAULT } from './dsh.ts'
 /** Settings namespace; also the `settings.plugin.item` card key. */
 export const SETTINGS_NAMESPACE = 'web-human-search'
 
+/** The browser family one engine's searches and sign-in windows run in. */
+export type BrowserFamily = 'chromium' | 'firefox' | 'webkit'
+
+/** Every valid browser family. */
+export const BROWSER_FAMILIES: readonly BrowserFamily[] = ['chromium', 'firefox', 'webkit']
+
 /** One ordered engine preference. Order in the array is the try order. */
 export interface EngineEntry {
   readonly id: EngineId
   readonly enabled: boolean
+  /**
+   * Browser family for this engine. Chromium is the default and keeps this
+   * plugin's original behavior; Firefox and WebKit are Playwright's own
+   * patched builds — genuinely different engines and TLS fingerprints, the
+   * workaround for engines that block Chrome-family browsers (Google's bot
+   * wall, DuckDuckGo's Chrome-keyed anomaly block).
+   */
+  readonly browser: BrowserFamily
 }
 
 /** Resolved plugin configuration. */
@@ -43,7 +57,7 @@ export interface Config {
 
 /** Defaults shown in a fresh settings page before any user override. */
 export const DEFAULT_CONFIG: Config = {
-  engines: ENGINE_ORDER_DEFAULT.map(id => ({ id, enabled: true })),
+  engines: ENGINE_ORDER_DEFAULT.map(id => ({ id, enabled: true, browser: 'chromium' })),
   headless: true,
   locale: '',
   executablePath: '',
@@ -53,11 +67,17 @@ export const DEFAULT_CONFIG: Config = {
   loginCommand: '',
 }
 
+/** Whether a value is a known browser family. */
+export function isBrowserFamily(value: unknown): value is BrowserFamily {
+  return value === 'chromium' || value === 'firefox' || value === 'webkit'
+}
+
 /** The schemastery schema: row config validator and settings namespace schema. */
 export const Config: z<Config> = z.object({
   engines: z.array(z.object({
     id: z.union([...ENGINE_IDS] as [EngineId, ...EngineId[]]),
     enabled: z.boolean().default(true),
+    browser: z.union(['chromium', 'firefox', 'webkit'] as [BrowserFamily, BrowserFamily, BrowserFamily]).default('chromium'),
   })).default(DEFAULT_CONFIG.engines),
   headless: z.boolean().default(true),
   locale: z.string().default(''),
@@ -80,11 +100,15 @@ export function normalizeConfig(raw: unknown): Config {
   for (const entry of value.engines ?? []) {
     if (entry === undefined || !isEngineId(entry.id) || seen.has(entry.id)) continue
     seen.add(entry.id)
-    engines.push({ id: entry.id, enabled: entry.enabled !== false })
+    engines.push({
+      id: entry.id,
+      enabled: entry.enabled !== false,
+      browser: isBrowserFamily(entry.browser) ? entry.browser : 'chromium',
+    })
   }
   for (const id of ENGINE_ORDER_DEFAULT) {
     if (seen.has(id)) continue
-    engines.push({ id, enabled: true })
+    engines.push({ id, enabled: true, browser: 'chromium' })
   }
   const num = (given: unknown, fallback: number): number =>
     typeof given === 'number' && Number.isFinite(given) && given > 0 ? given : fallback

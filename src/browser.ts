@@ -1,22 +1,53 @@
 /**
- * The browser pool: one persistent, plugin-private Chromium context per
+ * The browser pool: one persistent, plugin-private browser context per
  * engine, driven headless for searches and reopened headed for interactive
- * sign-in. A Chromium user-data-dir admits exactly one live browser, so each
- * engine slot is a small state machine (`closed → headless ⇄ headed`) guarded
- * by a promise-chain mutex; a headed sign-in session exclusively owns the
- * profile and headless attempts on that engine fail fast so the chain fails
- * over instead of queueing behind the user.
+ * sign-in. Each engine picks a browser family (Chromium by default; Firefox
+ * and WebKit as Playwright-patched escape hatches for sites that block
+ * Chrome-family fingerprints). A persistent profile admits exactly one live
+ * browser, so each engine slot is a small state machine
+ * (`closed → headless ⇄ headed`) guarded by a promise-chain mutex; a headed
+ * sign-in session exclusively owns the profile and headless attempts on that
+ * engine fail fast so the chain fails over instead of queueing behind the
+ * user.
  * @module dsh-human-search/browser
  */
 
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { chromium, type BrowserContext, type Page } from 'playwright'
+import { chromium, firefox, webkit, type BrowserContext, type BrowserType, type Page } from 'playwright'
 import type { Logger } from './dsh.ts'
 import type { EngineAdapter, EngineId } from './engines/types.ts'
 import { jitter, sleep } from './human.ts'
-import type { ConfigStore } from './settings.ts'
+import type { BrowserFamily, ConfigStore } from './settings.ts'
 import { bindPlaywrightBrowsersPath, engineProfileDir, type StateLayout } from './state.ts'
+
+/** The playwright browser driver for one family. */
+function browserTypeFor(family: BrowserFamily): BrowserType {
+  return family === 'firefox' ? firefox : family === 'webkit' ? webkit : chromium
+}
+
+/**
+ * One candidate's launch failure, condensed: playwright errors arrive with
+ * multi-line boxed banners ("Looks like Playwright was just installed…")
+ * while the actual cause — "Could not find profile folder", a missing
+ * library, a dead executable — hides among the following lines. Keep the
+ * first few meaningful lines and drop the box-drawing noise so a failed
+ * chain attempt can show every candidate's real reason.
+ */
+export function describeLaunchFailure(error: unknown): string {
+  const text = String(error).replace(/^Error:\s*/, '')
+  const lines = text.split('\n')
+    .map(line => line.replace(/^[║╔╚╝╠╣╗═\s]+|[║╔╚╝╠╣╗═\s]+$/g, '').trim())
+    .filter(line => line.length > 0 && !line.startsWith('Call log:'))
+    .filter(line => !line.includes('Playwright was just installed') && !line.includes('<3 Playwright Team') && !line.includes('playwright install'))
+  // Playwright prefixes the browser's own stderr with "[pid=N][err]" —
+  // those lines are the actual cause ("Could not find profile folder",
+  // missing-library tracebacks) and beat the launch-log preamble. The
+  // trailing "Call log" section repeats them as "- [pid=N][err] …" bullets.
+  const stderrLines = lines.filter(line => line.includes('][err]') && !line.startsWith('- '))
+  if (stderrLines.length > 0) return stderrLines.slice(0, 4).join(' | ').slice(0, 400)
+  return lines.slice(0, 3).join(' | ').slice(0, 400) || text.slice(0, 200)
+}
 
 /** Raised when an engine's profile is held by an interactive sign-in session. */
 export class EngineBusyError extends Error {
@@ -59,35 +90,58 @@ const SYSTEM_BROWSER_PATHS: readonly string[] = process.platform === 'darwin'
         '/opt/google/chrome/chrome',
       ]
 
+/** Plugin-managed browser kinds, one per registry install directory. */
+export type ManagedKind = 'chromium-full' | 'chromium-shell' | 'firefox' | 'webkit'
+
+/**
+ * Registry directory layouts for plugin-managed browsers: the install
+ * directory prefix and the executable path(s) inside it, per platform
+ * (mirrors playwright-core's registry table for revision-current builds).
+ */
+const MANAGED_LAYOUTS: Record<ManagedKind, { dir: string, inner: readonly string[] }> = {
+  'chromium-full': {
+    dir: 'chromium-',
+    inner: process.platform === 'win32'
+      ? ['chrome-win64\\chrome.exe', 'chrome-win\\chrome.exe']
+      : process.platform === 'darwin'
+        ? [
+            'chrome-mac64/Chromium.app/Contents/MacOS/Chromium',
+            'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+            'chrome-mac64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+          ]
+        : ['chrome-linux64/chrome', 'chrome-linux/chrome'],
+  },
+  'chromium-shell': {
+    dir: 'chromium_headless_shell-',
+    inner: process.platform === 'win32'
+      ? ['chrome-headless-shell-win64\\chrome-headless-shell.exe']
+      : process.platform === 'darwin'
+        ? ['chrome-mac/headless_shell']
+        : ['chrome-headless-shell-linux64/chrome-headless-shell', 'chrome-headless-shell-linux/chrome-headless-shell'],
+  },
+  firefox: {
+    dir: 'firefox-',
+    inner: process.platform === 'win32'
+      ? ['firefox/firefox.exe']
+      : process.platform === 'darwin'
+        ? ['firefox/Nightly.app/Contents/MacOS/firefox']
+        : ['firefox/firefox'],
+  },
+  webkit: {
+    dir: 'webkit-',
+    inner: process.platform === 'win32' ? ['Playwright.exe'] : ['pw_run.sh'],
+  },
+}
+
 /**
  * Resolve a plugin-managed browser under the browsers root. Playwright's
  * registry computes its directory at import time — before any plugin code can
  * set `PLAYWRIGHT_BROWSERS_PATH` — so managed browsers are located by
  * scanning the plugin's own directory layout and passed as explicit
- * `executablePath` values instead.
- *
- * `headless` selects the headless shell (the lighter, automation-safe build
- * whose agent string carries a `Headless` marker this pool rewrites);
- * otherwise the full Chrome-for-Testing binary is located, which headed
- * sign-in sessions need.
+ * `executablePath` values instead. Highest revision wins.
  */
-export function resolveManagedExecutable(browsersRoot: string, headless: boolean): string | undefined {
-  const prefix = headless ? 'chromium_headless_shell-' : 'chromium-'
-  const inner = headless
-    ? (process.platform === 'win32'
-        ? ['chrome-headless-shell-win64\\chrome-headless-shell.exe']
-        : process.platform === 'darwin'
-          ? ['chrome-mac/headless_shell']
-          : ['chrome-headless-shell-linux64/chrome-headless-shell', 'chrome-headless-shell-linux/chrome-headless-shell'])
-    : (process.platform === 'win32'
-        ? ['chrome-win64\\chrome.exe', 'chrome-win\\chrome.exe']
-        : process.platform === 'darwin'
-          ? [
-              'chrome-mac64/Chromium.app/Contents/MacOS/Chromium',
-              'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
-              'chrome-mac64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-            ]
-          : ['chrome-linux64/chrome', 'chrome-linux/chrome'])
+export function resolveManagedExecutable(browsersRoot: string, kind: ManagedKind): string | undefined {
+  const { dir: prefix, inner } = MANAGED_LAYOUTS[kind]
   let entries: string[] = []
   try {
     entries = readdirSync(browsersRoot).filter(entry => entry.startsWith(prefix) && /^\d+$/.test(entry.slice(prefix.length)))
@@ -152,8 +206,9 @@ export class BrowserPool {
   }
 
   /**
-   * Whether any usable browser exists: an explicitly configured executable, a
-   * known system browser, or a plugin-managed Chromium install. Cheap local
+   * Whether every enabled engine's browser family can resolve a launch
+   * candidate: an explicitly configured executable, a known system browser,
+   * a plugin-managed install, or a playwright-registry default. Cheap local
    * checks only — no launches, no network.
    */
   hasUsableBrowser(): boolean {
@@ -168,49 +223,77 @@ export class BrowserPool {
 
   private probeAvailability(): boolean {
     const config = this.store.get()
-    if (config.executablePath.length > 0 && existsSync(config.executablePath)) return true
-    if (SYSTEM_BROWSER_PATHS.some(path => existsSync(path))) return true
-    if (resolveManagedExecutable(this.layout.browsersRoot, true) !== undefined) return true
-    if (resolveManagedExecutable(this.layout.browsersRoot, false) !== undefined) return true
-    // Last resort: a playwright-registry Chromium at the default location
+    const families = new Set(config.engines.filter(entry => entry.enabled).map(entry => entry.browser))
+    if (families.size === 0) families.add('chromium')
+    return [...families].every(family => this.familyResolvable(config, family))
+  }
+
+  /** Whether one family has any launch candidate on this machine. */
+  private familyResolvable(config: ReturnType<ConfigStore['get']>, family: BrowserFamily): boolean {
+    if (family === 'chromium') {
+      if (config.executablePath.length > 0 && existsSync(config.executablePath)) return true
+      if (SYSTEM_BROWSER_PATHS.some(path => existsSync(path))) return true
+      if (resolveManagedExecutable(this.layout.browsersRoot, 'chromium-full') !== undefined) return true
+      if (resolveManagedExecutable(this.layout.browsersRoot, 'chromium-shell') !== undefined) return true
+    } else {
+      // Firefox and WebKit are playwright-patched builds only — no system
+      // channels and no user executablePath apply to them.
+      if (resolveManagedExecutable(this.layout.browsersRoot, family) !== undefined) return true
+    }
+    // Last resort: a playwright-registry install at the default location
     // (installed by other tooling) still works as a launch candidate.
     try {
-      return existsSync(chromium.executablePath())
+      return existsSync(browserTypeFor(family).executablePath())
     } catch {
       return false
     }
   }
 
+  /** The configured browser family for one engine (default: chromium). */
+  private familyOf(engine: EngineId): BrowserFamily {
+    return this.store.get().engines.find(entry => entry.id === engine)?.browser ?? 'chromium'
+  }
+
   /**
-   * Launch candidates in preference order. Headless searches prefer the
-   * system browsers, then the plugin-managed full Chromium (its new-headless
-   * fingerprint is far less bot-flagged than the headless shell's — Google
-   * serves the shell a /sorry wall even signed in), then the lighter
-   * headless shell. A headed sign-in window needs the full browser binary;
-   * the headless shell cannot open one.
+   * Launch candidates in preference order. Chromium prefers a configured
+   * executable, then system browsers, then the plugin-managed full Chromium
+   * (its new-headless fingerprint is far less bot-flagged than the headless
+   * shell's — Google serves the shell a /sorry wall even signed in), then the
+   * lighter headless shell. Firefox and WebKit resolve from the managed
+   * install or the playwright registry only; a headed sign-in window needs a
+   * full binary, so the headless shell never appears when `headed`.
    */
-  private candidates(config: ReturnType<ConfigStore['get']>, headed: boolean): LaunchCandidate[] {
+  private candidates(config: ReturnType<ConfigStore['get']>, family: BrowserFamily, headed: boolean): LaunchCandidate[] {
     const list: LaunchCandidate[] = []
-    if (config.executablePath.length > 0) {
-      list.push({ label: `configured (${config.executablePath})`, options: { executablePath: config.executablePath } })
+    if (family === 'chromium') {
+      if (config.executablePath.length > 0) {
+        list.push({ label: `configured (${config.executablePath})`, options: { executablePath: config.executablePath } })
+      }
+      list.push({ label: 'system Google Chrome', options: { channel: 'chrome' } })
+      list.push({ label: 'system Microsoft Edge', options: { channel: 'msedge' } })
+      const managedFull = resolveManagedExecutable(this.layout.browsersRoot, 'chromium-full')
+      const managedShell = resolveManagedExecutable(this.layout.browsersRoot, 'chromium-shell')
+      if (headed) {
+        if (managedFull !== undefined) {
+          list.push({ label: 'plugin-managed Chromium', options: { executablePath: managedFull } })
+        }
+      } else {
+        if (managedFull !== undefined) {
+          list.push({ label: 'plugin-managed Chromium (new headless)', options: { executablePath: managedFull } })
+        }
+        if (managedShell !== undefined) {
+          list.push({ label: 'plugin-managed headless shell', options: { executablePath: managedShell } })
+        }
+      }
+      list.push({ label: 'default playwright registry Chromium', options: {} })
+      return list
     }
-    list.push({ label: 'system Google Chrome', options: { channel: 'chrome' } })
-    list.push({ label: 'system Microsoft Edge', options: { channel: 'msedge' } })
-    const managedFull = resolveManagedExecutable(this.layout.browsersRoot, false)
-    const managedShell = resolveManagedExecutable(this.layout.browsersRoot, true)
-    if (headed) {
-      if (managedFull !== undefined) {
-        list.push({ label: 'plugin-managed Chromium', options: { executablePath: managedFull } })
-      }
-    } else {
-      if (managedFull !== undefined) {
-        list.push({ label: 'plugin-managed Chromium (new headless)', options: { executablePath: managedFull } })
-      }
-      if (managedShell !== undefined) {
-        list.push({ label: 'plugin-managed headless shell', options: { executablePath: managedShell } })
-      }
+    const label = family === 'firefox' ? 'Firefox' : 'WebKit'
+    const managed = resolveManagedExecutable(this.layout.browsersRoot, family)
+    if (managed !== undefined) {
+      list.push({ label: `plugin-managed ${label}`, options: { executablePath: managed } })
     }
-    list.push({ label: 'default playwright registry Chromium', options: {} })
+    list.push({ label: `default playwright registry ${label}`, options: {} })
     return list
   }
 
@@ -237,11 +320,13 @@ export class BrowserPool {
   }
 
   /**
-   * Launch (or reuse) the engine's persistent headless context. Any headless
-   * binary can report a `HeadlessChrome` user agent — the plugin-managed
-   * headless shell, or one configured explicitly — an instant bot signal, so
-   * the first launch of each candidate executable probes its real agent and
-   * relaunches with the headful-equivalent string when needed.
+   * Launch (or reuse) the engine's persistent headless context in the
+   * engine's configured family. Any headless Chromium binary can report a
+   * `HeadlessChrome` user agent — the plugin-managed headless shell, or one
+   * configured explicitly — an instant bot signal, so the first launch of
+   * each chromium-family candidate probes its real agent and relaunches with
+   * the headful-equivalent string when needed. Firefox and WebKit agent
+   * strings carry no headless marker, so no probe applies.
    */
   private launchHeadless(engine: EngineId): Promise<BrowserContext> {
     return this.enqueue(engine, async () => {
@@ -257,15 +342,18 @@ export class BrowserPool {
 
   private async launchPersistent(engine: EngineId, headed: boolean): Promise<BrowserContext> {
     const config = this.store.get()
+    const family = this.familyOf(engine)
+    const browserType = browserTypeFor(family)
     const adapter = this.adapters.get(engine)
     const locale = config.locale.length > 0 ? config.locale : (adapter?.defaultLocale ?? 'en-US')
-    const userDataDir = engineProfileDir(this.layout, engine)
+    const userDataDir = engineProfileDir(this.layout, engine, family)
     const viewport = { width: jitter(1_280, 320), height: jitter(800, 240) }
-    const fixHeadlessUa = !headed && config.headless
+    const fixHeadlessUa = !headed && config.headless && family === 'chromium'
     let lastError: unknown
-    for (const candidate of this.candidates(config, headed)) {
+    const failures: string[] = []
+    for (const candidate of this.candidates(config, family, headed)) {
       try {
-        let context = await chromium.launchPersistentContext(userDataDir, {
+        let context = await browserType.launchPersistentContext(userDataDir, {
           ...candidate.options,
           headless: headed ? false : config.headless,
           locale,
@@ -279,7 +367,7 @@ export class BrowserPool {
           const fix = this.uaFixes.get(key) ?? undefined
           if (fix !== undefined) {
             await context.close().catch(() => {})
-            context = await chromium.launchPersistentContext(userDataDir, {
+            context = await browserType.launchPersistentContext(userDataDir, {
               ...candidate.options,
               userAgent: fix,
               headless: true,
@@ -291,10 +379,17 @@ export class BrowserPool {
         return context
       } catch (error) {
         lastError = error
+        const executable = candidate.options.executablePath ?? (candidate.options.channel !== undefined ? `channel ${candidate.options.channel}` : 'playwright registry')
+        failures.push(`${candidate.label} [${executable}]: ${describeLaunchFailure(error)}`)
         this.logger.info('human-search: browser candidate "%s" unavailable for %s: %s', candidate.label, engine, String(error))
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    if (failures.length > 0) {
+      // Every candidate's reason, not just the last one's — a missing
+      // registry executable must not mask the managed binary's real failure.
+      throw new Error(`no usable ${family} browser for engine "${engine}" — ${failures.join('; ')}`)
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'no launch candidates resolved'))
   }
 
   /**

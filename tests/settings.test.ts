@@ -18,6 +18,7 @@ describe('normalizeConfig', () => {
     expect(config.idleCloseMs).toBe(300_000)
     expect(config.engines.map(entry => entry.id)).toEqual(['google', 'duckduckgo', 'bing', 'baidu', 'sogou'])
     expect(config.engines.every(entry => entry.enabled)).toBe(true)
+    expect(config.engines.every(entry => entry.browser === 'chromium')).toBe(true)
   })
 
   it('keeps the user order, drops duplicates and unknown ids, appends missing', () => {
@@ -30,12 +31,28 @@ describe('normalizeConfig', () => {
       ],
     })
     expect(config.engines).toEqual([
-      { id: 'baidu', enabled: false },
-      { id: 'bing', enabled: true },
-      { id: 'google', enabled: true },
-      { id: 'duckduckgo', enabled: true },
-      { id: 'sogou', enabled: true },
+      { id: 'baidu', enabled: false, browser: 'chromium' },
+      { id: 'bing', enabled: true, browser: 'chromium' },
+      { id: 'google', enabled: true, browser: 'chromium' },
+      { id: 'duckduckgo', enabled: true, browser: 'chromium' },
+      { id: 'sogou', enabled: true, browser: 'chromium' },
     ])
+  })
+
+  it('keeps valid per-engine browser families and rejects garbage', () => {
+    const config = normalizeConfig({
+      engines: [
+        { id: 'google', enabled: true, browser: 'firefox' },
+        { id: 'duckduckgo', enabled: true, browser: 'webkit' },
+        { id: 'bing', enabled: true, browser: 'netscape' },
+        { id: 'baidu', enabled: true },
+      ],
+    })
+    const byId = new Map(config.engines.map(entry => [entry.id, entry.browser]))
+    expect(byId.get('google')).toBe('firefox')
+    expect(byId.get('duckduckgo')).toBe('webkit')
+    expect(byId.get('bing')).toBe('chromium')
+    expect(byId.get('baidu')).toBe('chromium')
   })
 
   it('bounds numeric fields even when the stored section lies', () => {

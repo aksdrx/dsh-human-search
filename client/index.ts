@@ -20,12 +20,19 @@ const ENGINES: ReadonlyArray<{ readonly id: string, readonly label: string }> = 
   { id: 'sogou', label: 'Sogou' },
 ]
 
+/** Selectable browser families, mirrored from the host half. */
+const FAMILIES: ReadonlyArray<{ readonly id: string, readonly label: string }> = [
+  { id: 'chromium', label: 'Chromium' },
+  { id: 'firefox', label: 'Firefox' },
+  { id: 'webkit', label: 'WebKit' },
+]
+
 /** The plugin's settings namespace (also the card's slot key). */
 const NAMESPACE = 'web-human-search'
 
 /** The resolved section this card edits. */
 interface Section {
-  engines?: Array<{ id: string, enabled: boolean }>
+  engines?: Array<{ id: string, enabled: boolean, browser?: string }>
   headless?: boolean
   locale?: string
   executablePath?: string
@@ -79,17 +86,23 @@ export function apply(ctx: {
 
 /** The editable draft. */
 interface Draft {
-  engines: Array<{ id: string, enabled: boolean }>
+  engines: Array<{ id: string, enabled: boolean, browser: string }>
   headless: boolean
   locale: string
   executablePath: string
   perEngineTimeoutMs: string
 }
 
+/** Normalize a raw browser value to a selectable family. */
+function familyOf(value: string | undefined): string {
+  return FAMILIES.some(family => family.id === value) ? value as string : 'chromium'
+}
+
 /** Build a draft from a resolved section. */
 function draftOf(section: Section | undefined): Draft {
-  const engines = (section?.engines ?? ENGINES.map(engine => ({ id: engine.id, enabled: true })))
+  const engines = (section?.engines ?? ENGINES.map(engine => ({ id: engine.id, enabled: true, browser: 'chromium' })))
     .filter(entry => ENGINES.some(engine => engine.id === entry.id))
+    .map(entry => ({ id: entry.id, enabled: entry.enabled !== false, browser: familyOf(entry.browser) }))
   return {
     engines,
     headless: section?.headless !== false,
@@ -171,10 +184,15 @@ function HumanSearchCard({ scope }: { scope: SettingsScope }): ReactNode {
         const engines = draft.engines.map((entry, at) => at === index ? { ...entry, enabled: !entry.enabled } : entry)
         setDraft({ ...draft, engines })
       },
+      onBrowser: (index, browser) => {
+        if (draft === null) return
+        const engines = draft.engines.map((entry, at) => at === index ? { ...entry, browser } : entry)
+        setDraft({ ...draft, engines })
+      },
       onSignIn: engine => { void signIn(engine) },
     }),
     createElement('p', { style: { margin: '0 0 6px', fontSize: '0.85rem' } },
-      `Engine order${overridden('engines') ? ' · overridden' : ''} — tried top to bottom; disable an engine or reorder with the arrows.`),
+      `Engine order${overridden('engines') ? ' · overridden' : ''} — tried top to bottom; disable an engine, pick its browser family, or reorder with the arrows. Firefox and WebKit need a one-time install (Settings hint: run \`npm run install-browser firefox webkit\` in the package).`),
     createElement(CheckField, {
       label: `Run searches headless${overridden('headless') ? ' · overridden' : ''}`,
       hint: 'Turn off to watch every search in a visible browser window.',
@@ -184,7 +202,7 @@ function HumanSearchCard({ scope }: { scope: SettingsScope }): ReactNode {
     }),
     createElement(TextField, {
       label: `Browser executable${overridden('executablePath') ? ' · overridden' : ''}`,
-      hint: 'Optional absolute path to a Chrome/Chromium/Edge binary; empty uses system browsers, then the plugin-managed Chromium.',
+      hint: 'Optional absolute path to a Chrome/Chromium/Edge binary for Chromium-family engines; empty uses system browsers, then the plugin-managed Chromium.',
       value: effective.executablePath,
       disabled,
       placeholder: '/usr/bin/google-chrome',
@@ -225,13 +243,14 @@ function HumanSearchCard({ scope }: { scope: SettingsScope }): ReactNode {
   )
 }
 
-/** The ordered engine editor with toggles, reorder arrows, and sign-in buttons. */
+/** The ordered engine editor with toggles, browser-family selectors, reorder arrows, and sign-in buttons. */
 function EngineList(props: {
-  engines: Array<{ id: string, enabled: boolean }>
+  engines: Array<{ id: string, enabled: boolean, browser: string }>
   disabled: boolean
   requested: string
   onMove: (index: number, delta: number) => void
   onToggle: (index: number) => void
+  onBrowser: (index: number, browser: string) => void
   onSignIn: (engine: string) => void
 }): ReactNode {
   return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '6px' } },
@@ -249,6 +268,13 @@ function EngineList(props: {
           onChange: () => props.onToggle(index),
         }),
         createElement('span', { style: { minWidth: '96px', textDecoration: entry.enabled ? 'none' : 'line-through', opacity: entry.enabled ? 1 : 0.55 } }, `${index + 1}. ${label}`),
+        createElement('select', {
+          value: entry.browser,
+          disabled: props.disabled,
+          title: 'Browser family for this engine\'s searches and sign-in windows',
+          onChange: (event: ChangeEvent<HTMLSelectElement>) => props.onBrowser(index, event.target.value),
+          style: { ...inputStyle(), width: 'auto', padding: '4px 6px' },
+        }, FAMILIES.map(family => createElement('option', { key: family.id, value: family.id }, family.label))),
         createElement('button', { type: 'button', disabled: props.disabled || index === 0, onClick: () => props.onMove(index, -1), style: buttonStyle(props.disabled || index === 0), title: 'Move up' }, '↑'),
         createElement('button', { type: 'button', disabled: props.disabled || index === props.engines.length - 1, onClick: () => props.onMove(index, 1), style: buttonStyle(props.disabled || index === props.engines.length - 1), title: 'Move down' }, '↓'),
         createElement('button', {

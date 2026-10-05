@@ -40,7 +40,7 @@ Restart the profile (`dsh --profile web` or your usual launcher). The `web` row 
 
 The plugin uses, in order:
 
-1. an explicit **Browser executable** path set in the settings card,
+1. an explicit **Browser executable** path set in the settings card (Chromium-family engines),
 2. your system **Google Chrome / Microsoft Edge / Chromium**,
 3. a **plugin-managed Chromium** under `$DSH_HOME/web-human-search/browsers/`.
 
@@ -54,6 +54,27 @@ npm run install-browser        # runs `node lib/cli.js install-browser`
 Headless searches prefer the plugin-managed **full Chromium** (new-headless mode — a far less bot-flagged fingerprint than the dedicated headless shell; Google serves the shell a CAPTCHA wall even signed in), with the lighter headless shell as fallback. Whichever binary wins, a `HeadlessChrome` user-agent marker — an instant bot signal, from the shell *or* from a manually configured executable — is probed once and rewritten to the headful-equivalent string automatically.
 
 Without any browser the provider reports unavailable (stock search errors carry this hint); install one or revert the provider selection (below).
+
+### Browser families (Firefox & WebKit)
+
+Some engines block anything that smells like Chrome — Playwright Chromium so hard that even the headed sign-in window can't complete a Google login, DuckDuckGo with an anomaly wall keyed to the Chrome TLS fingerprint. Every engine therefore has its own **browser family** selector in the settings card:
+
+- **Chromium** (default) — everything above; unchanged behavior and profile paths.
+- **Firefox** — Playwright's own patched Firefox build: a genuinely different engine, TLS fingerprint, and everything else a bot-wall sniffs.
+- **WebKit** — Playwright's patched WebKit: a third independent fingerprint. It is *not* real Safari, and engines render slightly differently in it; it's the least battle-tested path, kept as a second escape hatch.
+
+Each family keeps its own per-engine profile directory (e.g. `profiles/bing` vs `profiles/bing-firefox`), so warmed cookies never mix. Firefox and WebKit resolve only from a plugin-managed install or the playwright registry — a system Firefox binary cannot be driven by Playwright, so the **Browser executable** setting applies to Chromium-family engines only.
+
+Install and warm them the same way:
+
+```sh
+npm run install-browser -- firefox webkit   # managed installs under the state browsers/ dir
+npm run install-browser -- chrome           # branded Google Chrome, system-wide (needs sudo on Linux);
+                                            # becomes the first non-configured candidate automatically
+npm run warm -- --family=firefox bing       # warm the Firefox-family profile of one engine
+```
+
+If a family's system libraries are missing, the installer prints the exact `sudo npx playwright@1.63.0 install-deps <kind>` command to run.
 
 ### First-run warm-up (recommended)
 
@@ -71,7 +92,7 @@ One headed window per engine opens on the plugin's shared profile: run one searc
 
 Settings → Plugins → Plugin configuration → **Human Web Search**:
 
-- **Engine order** — reorder with ↑/↓, disable engines; the list order is the fallback order.
+- **Engine order** — reorder with ↑/↓, disable engines, and pick each engine's **browser family** (see above); the list order is the fallback order.
 - **Sign in** per engine — opens the interactive window on the DSH machine immediately.
 - **Run searches headless** — off shows every search in a visible window (debugging).
 - **Browser executable**, **Locale**, **Per-engine timeout (ms)**.

@@ -1,6 +1,6 @@
 {
   "name": "dsh-human-search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Human-browser web search provider for DeepSeek Harness: ordered engine fallback chain (Google, DuckDuckGo, Bing, Baidu, Sogou) over Playwright with CAPTCHA/login handoff to the user and persistent per-engine cookies.",
   "keywords": [
     "deepseek-harness",
